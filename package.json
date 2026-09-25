@@ -1,0 +1,14 @@
+{
+  "name": "opencode-gpt-imagegen-preview",
+  "version": "0.1.0",
+  "description": "OpenCode V2 project-local gpt_imagegen port based on Yuji Hatakeyama's MIT-licensed opencode-gpt-imagegen.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test scripts/tests/test_gpt_imagegen.mjs"
+  }
+}
