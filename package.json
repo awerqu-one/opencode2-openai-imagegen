@@ -9,6 +9,6 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test scripts/tests/test_gpt_imagegen.mjs"
+    "test": "node --test scripts/tests/test_gpt_imagegen.mjs scripts/tests/test_install.mjs"
   }
 }

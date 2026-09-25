@@ -10,6 +10,16 @@ Project-local OpenCode V2 plugin that adds the `gpt_imagegen` raster-image tool.
 
 No `npm install` is needed to use the plugin. Each machine needs its own OAuth connection; credentials are not stored in this repository.
 
+## Install into another project
+
+From this repository's root, run:
+
+```bash
+node install.mjs /path/to/project
+```
+
+The target project directory must already exist. The installer copies only the plugin and skill. Identical files are left unchanged; different existing files cause a safe failure with no writes. Inspect conflicts and get approval before using `--force`; it replaces only the plugin and skill files. The installer does not change global OpenCode configuration.
+
 ## Use the tool
 
 The `gpt_imagegen` tool accepts a prompt, an output name, a quality, and optional size and reference images. Example input:
@@ -31,7 +41,7 @@ For complete agent instructions and argument details, see [the GPT ImageGen skil
 
 ## Test
 
-Node.js 18 or newer is required for the built-in test runner:
+Node.js 18 or newer is required for the installer and built-in test runner:
 
 ```bash
 npm test

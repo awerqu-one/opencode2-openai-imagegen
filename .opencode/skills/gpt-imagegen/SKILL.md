@@ -1,6 +1,6 @@
 ---
 name: gpt-imagegen
-description: Generate raster images with the project's gpt_imagegen tool. Use when the user asks for illustrations, photos, textures, sprites, mockups, or image variations. Do not use for SVG/vector edits, maintaining an existing logo or icon system, or assets better built in HTML/CSS/canvas.
+description: Generate raster images with the project's gpt_imagegen tool and install it into another OpenCode V2 project. Use when the user asks to create illustrations, photos, textures, sprites, mockups, image variations, or to install/copy this tool. Do not use for SVG/vector edits, maintaining an existing logo or icon system, or assets better built in HTML/CSS/canvas.
 ---
 
 # GPT ImageGen
@@ -14,7 +14,17 @@ Use `gpt_imagegen` when the user asks to create a raster image. The tool returns
 - Allow network access to `chatgpt.com` for image generation.
 - The plugin calls the undocumented `chatgpt.com/backend-api/codex/responses` endpoint. It may change independently of this project.
 
-To use the plugin from another project, copy `.opencode/plugins/gpt-imagegen.js` and `.opencode/skills/gpt-imagegen/SKILL.md` into the same relative paths in that project. No `npm install` is required to run the plugin.
+## Install in another project
+
+Ask for the target project path if it was not provided. From this repository's root, run:
+
+```bash
+node install.mjs /path/to/project
+```
+
+The target directory must already exist. The installer copies only the plugin and skill to their project-local `.opencode` paths; it does not change global OpenCode configuration. Identical files are left alone. If different files already exist, the installer stops without writing anything. Inspect the conflict and get explicit user approval before using `--force`; that flag replaces only the managed plugin and skill files. Symlinked destination paths are rejected.
+
+No `npm install` is required to run the plugin.
 
 ## Generate
 
