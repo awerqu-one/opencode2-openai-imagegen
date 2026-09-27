@@ -13,6 +13,7 @@ Use `gpt_imagegen` when the user asks to create a raster image. The tool returns
 - Connect this machine's OpenAI integration with ChatGPT/Codex OAuth. API-key credentials are not supported; never copy credentials into the repository or prompt.
 - Allow network access to `chatgpt.com` for image generation.
 - The plugin calls the undocumented `chatgpt.com/backend-api/codex/responses` endpoint. It may change independently of this project.
+- The hosted model defaults to `gpt-5.5`; if the backend retires that deployment, set `OPENCODE_IMAGEGEN_MODEL` for the OpenCode process to a replacement model slug.
 
 ## Install in another project
 
@@ -31,7 +32,7 @@ No `npm install` is required to run the plugin.
 Call the `gpt_imagegen` tool with:
 
 - `prompt` — describe subject, composition, style, lighting, and important constraints.
-- `out` — a relative filename under `.opencode/generated-images/`; use `hero.png`, not `.opencode/generated-images/hero.png`.
+- `out` — a relative `.png` filename under `.opencode/generated-images/`; use `hero.png`, not `.opencode/generated-images/hero.png`.
 - `quality` — `low`, `medium`, `high`, or `auto`.
 - `size` — optional `WIDTHxHEIGHT`; dimensions must be multiples of 16, max edge 3840, aspect ratio at most 3:1, and total pixels between 655,360 and 8,294,400.
 - `images` — optional project-relative reference image paths. Only PNG, JPEG, WebP, and GIF files inside the active project are accepted; maximum 5 images, 20 MiB each, 50 MiB total.
