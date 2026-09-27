@@ -35,7 +35,15 @@ The `gpt_imagegen` tool accepts a prompt, an output name, a quality, and optiona
 
 `out` is relative to `.opencode/generated-images/`; do not include that directory in the argument. The plugin writes PNG files there, preserves existing files, and chooses a versioned name on collision. Generated images are ignored by Git.
 
-Reference images must be inside the active project and use PNG, JPEG, WebP, or GIF format. Limits: 5 images, 20 MiB per image, 50 MiB total.
+Reference images must be inside the active project and use PNG, JPEG, WebP, or GIF format. Limits: 5 images, 20 MiB per image, 50 MiB total. Output filenames must use the `.png` extension.
+
+The hosted Codex model defaults to `gpt-5.5`. If that deployment changes, set `OPENCODE_IMAGEGEN_MODEL` to another valid model slug for the OpenCode process, for example:
+
+```bash
+OPENCODE_IMAGEGEN_MODEL=gpt-5.6-sol opencode
+```
+
+The override exists because the ChatGPT Codex backend is undocumented and model availability can change independently of this project.
 
 For complete agent instructions and argument details, see [the GPT ImageGen skill](.opencode/skills/gpt-imagegen/SKILL.md).
 
@@ -54,6 +62,7 @@ The plugin has no third-party runtime dependencies.
 - OpenCode V2 only. The package was checked with V2.0.16 on Linux; the original plugin tests also ran under V2.0.15.
 - Windows/macOS and future OpenCode versions have not been certified.
 - Image requests use `chatgpt.com/backend-api/codex/responses`, an undocumented endpoint that may change independently of this project.
+- Non-auth HTTP failures include a bounded backend error excerpt to make model/backend changes easier to diagnose.
 - OpenAI API-key authentication is not supported; connect ChatGPT/Codex OAuth through OpenCode.
 
 See the [OpenCode plugin guide](https://opencode.ai/v2/docs/build/plugins) and [skills guide](https://opencode.ai/v2/docs/skills).
