@@ -4,7 +4,9 @@ import {
   MAX_CODEX_RESPONSE_BYTES,
   MAX_GENERATED_PNG_BYTES,
   parseImageGenerationResultFromSSE,
+  resolveCodexModel,
   validateGeneratedPngEncodedLength,
+  validateImageSize,
 } from "../../.opencode/plugins/gpt-imagegen.js"
 import {
   lstat,
@@ -392,6 +394,63 @@ describe("OpenCode V2 GPT ImageGen plugin", { concurrency: false }, () => {
     assert.throws(
       () => validateGeneratedPngEncodedLength(maximumEncodedLength + 1),
       /50 MiB.*limit/i,
+    )
+  })
+
+
+  it("validates configured model slugs without hard-coding deployment changes", () => {
+    assert.equal(resolveCodexModel({}), "gpt-5.5")
+    assert.equal(resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "gpt-5.6-sol" }), "gpt-5.6-sol")
+    assert.equal(resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "  gpt-5.6-sol  " }), "gpt-5.6-sol")
+    assert.throws(
+      () => resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "bad model slug" }),
+      /model slug/i,
+    )
+    assert.throws(
+      () => resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "   " }),
+      /non-empty model slug/i,
+    )
+  })
+
+  it("validates documented image sizes locally", () => {
+    assert.equal(validateImageSize(undefined), undefined)
+    assert.equal(validateImageSize("auto"), "auto")
+    assert.equal(validateImageSize("1024x1024"), "1024x1024")
+    assert.equal(validateImageSize("2048x1152"), "2048x1152")
+    assert.throws(() => validateImageSize("1023x1024"), /multiples of 16/i)
+    assert.throws(() => validateImageSize("4096x1024"), /3840/i)
+    assert.throws(() => validateImageSize("3072x512"), /3:1/i)
+    assert.throws(() => validateImageSize("512x512"), /655,360/i)
+    assert.throws(() => validateImageSize("not-a-size"), /WIDTHxHEIGHT/i)
+  })
+
+  it("rejects non-PNG output names before fetching", async (t) => {
+    const { project } = await makeProject(t)
+    const plugin = await setupPlugin(project)
+    let fetchCalls = 0
+    await withMockFetch(async () => {
+      fetchCalls += 1
+      return sseImageResponse()
+    }, async () => {
+      await expectToolError(
+        () => executeTool(plugin, project, baseArgs({ out: "generated.jpg" })),
+        /\.png extension/i,
+      )
+      assert.equal(fetchCalls, 0)
+    })
+  })
+
+  it("includes bounded backend error details for non-auth HTTP failures", async (t) => {
+    const { project } = await makeProject(t)
+    const plugin = await setupPlugin(project)
+    await withMockFetch(
+      async () => new Response(JSON.stringify({ error: "model not found" }), { status: 404 }),
+      async () => {
+        await expectToolError(
+          () => executeTool(plugin, project, baseArgs()),
+          /HTTP 404.*model not found/i,
+        )
+      },
     )
   })
 
