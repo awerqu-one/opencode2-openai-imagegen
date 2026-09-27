@@ -576,7 +576,7 @@ describe("OpenCode V2 GPT ImageGen plugin", { concurrency: false }, () => {
   it("rejects a directory used as the output filename before fetching", async (t) => {
     const { project } = await makeProject(t)
     const outputRoot = join(project, ".opencode", "generated-images")
-    await mkdir(join(outputRoot, "existing-directory"), { recursive: true })
+    await mkdir(join(outputRoot, "existing-directory.png"), { recursive: true })
     const plugin = await setupPlugin(project)
     let fetchCalls = 0
 
@@ -585,7 +585,7 @@ describe("OpenCode V2 GPT ImageGen plugin", { concurrency: false }, () => {
       return sseImageResponse()
     }, async () => {
       await expectToolError(
-        () => executeTool(plugin, project, baseArgs({ out: "existing-directory" })),
+        () => executeTool(plugin, project, baseArgs({ out: "existing-directory.png" })),
         /regular image file|directory|special file/i,
       )
       assert.equal(fetchCalls, 0)
