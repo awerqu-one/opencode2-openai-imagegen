@@ -32,7 +32,8 @@ export const CODEX_RESPONSES_ENDPOINT = "https://chatgpt.com/backend-api/codex/r
 export const MAX_CODEX_RESPONSE_BYTES = 72 * 1024 * 1024
 export const MAX_GENERATED_PNG_BYTES = 50 * 1024 * 1024
 
-const CODEX_MODEL = "gpt-5.5"
+const DEFAULT_CODEX_MODEL = "gpt-5.5"
+const IMAGEGEN_MODEL_ENV = "OPENCODE_IMAGEGEN_MODEL"
 const MAX_REFERENCE_COUNT = 5
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 const MAX_REFERENCE_TOTAL_BYTES = 50 * 1024 * 1024
@@ -58,6 +59,51 @@ function isErrorCode(error, code) {
 
 function filesystemError(action, error) {
   return new Error(`${action} (${getErrorCode(error)}).`)
+}
+
+export function resolveCodexModel(env = process.env) {
+  const configured = env?.[IMAGEGEN_MODEL_ENV]
+  if (configured === undefined) return DEFAULT_CODEX_MODEL
+  if (typeof configured !== "string" || configured.trim().length === 0) {
+    throw new Error(`${IMAGEGEN_MODEL_ENV} must be a non-empty model slug when set.`)
+  }
+  const model = configured.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(model)) {
+    throw new Error(`${IMAGEGEN_MODEL_ENV} contains an invalid model slug.`)
+  }
+  return model
+}
+
+export function validateImageSize(size) {
+  if (size === undefined) return undefined
+  if (typeof size !== "string") throw new Error("The size argument must be a string when supplied.")
+  if (size === "auto") return size
+
+  const match = /^(\d+)x(\d+)$/.exec(size)
+  if (!match) {
+    throw new Error("The size argument must be auto or WIDTHxHEIGHT, for example 1024x1024.")
+  }
+
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new Error("The size dimensions must be positive integers.")
+  }
+  if (width % 16 !== 0 || height % 16 !== 0) {
+    throw new Error("The size dimensions must be multiples of 16 pixels.")
+  }
+  if (Math.max(width, height) > 3840) {
+    throw new Error("The size maximum edge is 3840 pixels.")
+  }
+  if (Math.max(width, height) / Math.min(width, height) > 3) {
+    throw new Error("The size aspect ratio must not exceed 3:1.")
+  }
+
+  const pixels = width * height
+  if (pixels < 655360 || pixels > 8294400) {
+    throw new Error("The size must contain between 655,360 and 8,294,400 pixels.")
+  }
+  return size
 }
 
 function isPathInside(parent, candidate) {
@@ -305,6 +351,9 @@ export function validateOutputPath(out) {
   const normalized = path.normalize(platformPath)
   if (normalized === "." || normalized === path.sep || path.isAbsolute(normalized)) {
     throw new Error("The out argument must name a file inside .opencode/generated-images/.")
+  }
+  if (path.extname(normalized).toLowerCase() !== ".png") {
+    throw new Error("The out argument must use a .png extension.")
   }
   return normalized
 }
@@ -556,9 +605,7 @@ function validateGenerationArgs(args) {
   if (!["low", "medium", "high", "auto"].includes(args.quality)) {
     throw new Error("The quality argument must be low, medium, high, or auto.")
   }
-  if (args.size !== undefined && typeof args.size !== "string") {
-    throw new Error("The size argument must be a string when supplied.")
-  }
+  validateImageSize(args.size)
   if (args.images !== undefined && !Array.isArray(args.images)) {
     throw new Error("The images argument must be an array of file paths.")
   }
@@ -580,7 +627,7 @@ export function buildCodexRequest(auth, args, referenceDataUrls = []) {
   }
 
   const body = {
-    model: CODEX_MODEL,
+    model: resolveCodexModel(),
     instructions:
       "You are an image generation assistant running inside the Codex backend. " +
       "Always satisfy the request by invoking the image_generation tool exactly once. " +
@@ -771,7 +818,15 @@ export async function requestGeneratedPng(auth, args, referenceDataUrls, { fetch
       throw new Error("ChatGPT rejected the OpenAI OAuth connection. Reconnect ChatGPT/Codex OAuth and retry.")
     }
     const status = Number.isInteger(response?.status) ? `HTTP ${response.status}` : "an HTTP error"
-    throw new Error(`ChatGPT image generation returned ${status}. Retry later or reconnect ChatGPT OAuth.`)
+    let detail = ""
+    try {
+      const text = await response.text()
+      detail = text.replace(/\s+/g, " ").trim().slice(0, 500)
+    } catch {
+      detail = ""
+    }
+    const detailSuffix = detail ? `: ${detail}` : ""
+    throw new Error(`ChatGPT image generation returned ${status}${detailSuffix}`)
   }
   if (!response.body) throw new Error("ChatGPT image generation returned no event stream.")
 
