@@ -4,7 +4,10 @@ import {
   MAX_CODEX_RESPONSE_BYTES,
   MAX_GENERATED_PNG_BYTES,
   parseImageGenerationResultFromSSE,
+  requestGeneratedPng,
   validateGeneratedPngEncodedLength,
+  validateOutputPath,
+  validateSize,
 } from "../../.opencode/plugins/gpt-imagegen.js"
 import {
   lstat,
@@ -517,7 +520,7 @@ describe("OpenCode V2 GPT ImageGen plugin", { concurrency: false }, () => {
   it("rejects a directory used as the output filename before fetching", async (t) => {
     const { project } = await makeProject(t)
     const outputRoot = join(project, ".opencode", "generated-images")
-    await mkdir(join(outputRoot, "existing-directory"), { recursive: true })
+    await mkdir(join(outputRoot, "existing-directory.png"), { recursive: true })
     const plugin = await setupPlugin(project)
     let fetchCalls = 0
 
@@ -526,7 +529,7 @@ describe("OpenCode V2 GPT ImageGen plugin", { concurrency: false }, () => {
       return sseImageResponse()
     }, async () => {
       await expectToolError(
-        () => executeTool(plugin, project, baseArgs({ out: "existing-directory" })),
+        () => executeTool(plugin, project, baseArgs({ out: "existing-directory.png" })),
         /regular image file|directory|special file/i,
       )
       assert.equal(fetchCalls, 0)
@@ -552,5 +555,151 @@ describe("OpenCode V2 GPT ImageGen plugin", { concurrency: false }, () => {
       )
       assert.equal(fetchCalls, 0)
     })
+  })
+
+  it("validates size locally before any request is sent", async (t) => {
+    const { project } = await makeProject(t)
+    const plugin = await setupPlugin(project)
+    let fetchCalls = 0
+
+    await withMockFetch(async () => {
+      fetchCalls += 1
+      return sseImageResponse()
+    }, async () => {
+      for (const size of ["1000x1000", "4096x4096", "3840x1024", "256x256", "3840x2176", "1024", "1024X1024", ""]) {
+        await expectToolError(() => executeTool(plugin, project, baseArgs({ size })), /size/i)
+      }
+      assert.equal(fetchCalls, 0)
+    })
+  })
+
+  it("accepts the documented size bounds", () => {
+    for (const size of ["auto", "1024x1024", "640x1024", "1280x3840", "3840x1280", "3840x2160", "2048x2048"]) {
+      assert.equal(validateSize(size), size)
+    }
+  })
+
+  it("rejects each documented size violation", () => {
+    const violations = [
+      ["1000x1000", /multiples of 16/],
+      ["4096x4096", /3840/],
+      ["3840x1024", /3:1/],
+      ["256x256", /655360/],
+      ["3840x2176", /8294400/],
+      ["1024X1024", /auto or WIDTHxHEIGHT/],
+      ["0x1024", /auto or WIDTHxHEIGHT/],
+      ["1024", /auto or WIDTHxHEIGHT/],
+      ["", /auto or WIDTHxHEIGHT/],
+      [1024, /auto or WIDTHxHEIGHT/],
+    ]
+    for (const [size, pattern] of violations) {
+      assert.throws(() => validateSize(size), pattern, `size ${JSON.stringify(size)} should be rejected`)
+    }
+  })
+
+  it("requires a PNG output name and adds the extension when it is omitted", () => {
+    assert.equal(validateOutputPath("hero"), "hero.png")
+    assert.equal(validateOutputPath(join("sub", "hero")), join("sub", "hero.png"))
+    assert.equal(validateOutputPath("hero.png"), "hero.png")
+    assert.equal(validateOutputPath("HERO.PNG"), "HERO.PNG")
+    assert.throws(() => validateOutputPath("photo.jpg"), /must end in \.png/)
+    assert.throws(() => validateOutputPath("archive.tar.gz"), /must end in \.png/)
+    assert.throws(() => validateOutputPath(".png"), /filename before \.png/)
+  })
+
+  it("rejects a non-PNG output name before fetching and saves an extensionless name as PNG", async (t) => {
+    const { project } = await makeProject(t)
+    const plugin = await setupPlugin(project)
+    let fetchCalls = 0
+
+    await withMockFetch(async () => {
+      fetchCalls += 1
+      return sseImageResponse()
+    }, async () => {
+      await expectToolError(() => executeTool(plugin, project, baseArgs({ out: "photo.jpg" })), /must end in \.png/)
+      assert.equal(fetchCalls, 0)
+
+      const result = await executeTool(plugin, project, baseArgs({ out: "sunrise" }))
+      assert.match(resultText(result), /sunrise\.png/)
+    })
+
+    const outputFiles = await listFiles(join(project, ".opencode", "generated-images"))
+    assert.equal(outputFiles.length, 1)
+    assert.equal(basename(outputFiles[0]), "sunrise.png")
+    assert.deepEqual(await readFile(outputFiles[0]), GENERATED_PNG)
+  })
+
+  it("reports each HTTP failure with an accurate next step", async () => {
+    const auth = { type: "oauth", access: "unit-test-oauth-token-not-real" }
+    const cases = [
+      [400, /rejected the image request \(HTTP 400\)/],
+      [401, /Reconnect ChatGPT\/Codex OAuth/],
+      [404, /endpoint was not found \(HTTP 404\)/],
+      [413, /too large \(HTTP 413\)/],
+      [429, /rate limited \(HTTP 429\)/],
+      [503, /temporarily unavailable \(HTTP 503\)/],
+      [418, /returned HTTP 418/],
+    ]
+    for (const [status, pattern] of cases) {
+      const outcome = await requestGeneratedPng(auth, baseArgs(), [], {
+        fetchImpl: async () => new Response("", { status }),
+      }).then(() => undefined, (error) => error)
+      assert.match(outcome.message, pattern, `status ${status}`)
+      if (status !== 401) assert.doesNotMatch(outcome.message, /Reconnect ChatGPT/, `status ${status}`)
+    }
+  })
+
+  it("surfaces a bounded failure detail and cancels the Codex stream", async () => {
+    let cancelled = false
+    const data = JSON.stringify({
+      type: "response.failed",
+      response: { error: { message: `Prompt was blocked\n by policy ${"x".repeat(500)}` } },
+    })
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${data}\n\n`))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+
+    const outcome = await parseImageGenerationResultFromSSE(stream).then(() => undefined, (error) => error)
+    assert.match(outcome.message, /Prompt was blocked by policy x+/)
+    assert.ok(outcome.message.length < 400, "the failure detail should be truncated")
+    assert.equal(cancelled, true)
+  })
+
+  it("fails a stalled stream with a timeout error instead of hanging", async () => {
+    const auth = { type: "oauth", access: "unit-test-oauth-token-not-real" }
+    const outcome = await requestGeneratedPng(auth, baseArgs(), [], {
+      timeoutMs: 20,
+      fetchImpl: async (url, init) => ({
+        ok: true,
+        status: 200,
+        body: new ReadableStream({
+          start(controller) {
+            init.signal.addEventListener("abort", () => controller.error(new Error("aborted")))
+          },
+        }),
+      }),
+    }).then(() => undefined, (error) => error)
+    assert.match(outcome.message, /timed out/)
+  })
+
+  it("reports a caller cancellation as cancelled rather than as a timeout", async () => {
+    const auth = { type: "oauth", access: "unit-test-oauth-token-not-real" }
+    const controller = new AbortController()
+    const pending = requestGeneratedPng(auth, baseArgs(), [], {
+      signal: controller.signal,
+      fetchImpl: (url, init) => new Promise((_, reject) => {
+        init.signal.addEventListener("abort", () => reject(new Error("aborted")))
+      }),
+    }).then(() => undefined, (error) => error)
+    controller.abort()
+
+    const outcome = await pending
+    assert.match(outcome.message, /cancelled/)
+    assert.doesNotMatch(outcome.message, /timed out/)
   })
 })

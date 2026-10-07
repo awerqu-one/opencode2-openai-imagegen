@@ -18,7 +18,7 @@ From this repository's root, run:
 node install.mjs /path/to/project
 ```
 
-The target project directory must already exist. The installer copies only the plugin and skill. Identical files are left unchanged; different existing files cause a safe failure with no writes. Inspect conflicts and get approval before using `--force`; it replaces only the plugin and skill files. The installer does not change global OpenCode configuration.
+The target project directory must already exist. The installer copies only the plugin and skill. Identical files are left unchanged; different existing files cause a safe failure with no writes. If a write fails partway through, the installer rolls back the files and directories it created or changed. Inspect conflicts and get approval before using `--force`; it replaces only the plugin and skill files. The installer does not change global OpenCode configuration.
 
 ## Use the tool
 
@@ -33,7 +33,9 @@ The `gpt_imagegen` tool accepts a prompt, an output name, a quality, and optiona
 }
 ```
 
-`out` is relative to `.opencode/generated-images/`; do not include that directory in the argument. The plugin writes PNG files there, preserves existing files, and chooses a versioned name on collision. Generated images are ignored by Git.
+`out` is relative to `.opencode/generated-images/`; do not include that directory in the argument. It must end in `.png`; if the extension is omitted, `.png` is added, and any other extension is rejected. The plugin writes PNG files there, preserves existing files, and chooses a versioned name on collision. Generated images are ignored by Git.
+
+`size` is `auto` or `WIDTHxHEIGHT`. It is checked before any request is sent, against the limits listed in the skill.
 
 Reference images must be inside the active project and use PNG, JPEG, WebP, or GIF format. Limits: 5 images, 20 MiB per image, 50 MiB total.
 
@@ -55,6 +57,7 @@ The plugin has no third-party runtime dependencies.
 - Windows/macOS and future OpenCode versions have not been certified.
 - Image requests use `chatgpt.com/backend-api/codex/responses`, an undocumented endpoint that may change independently of this project.
 - OpenAI API-key authentication is not supported; connect ChatGPT/Codex OAuth through OpenCode.
+- Each generation request times out after 10 minutes. A stalled response fails with a timeout error instead of hanging.
 
 See the [OpenCode plugin guide](https://opencode.ai/v2/docs/build/plugins) and [skills guide](https://opencode.ai/v2/docs/skills).
 

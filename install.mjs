@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { constants as fsConstants } from "node:fs"
-import { lstat, mkdir, open, readFile, realpath, stat } from "node:fs/promises"
+import { lstat, mkdir, open, readFile, realpath, rmdir, stat, unlink } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
 const MANAGED_FILES = [
@@ -185,18 +185,19 @@ async function writeFileContents(destinationPath, destinationName, contents, fla
   throw new Error(`Cannot write ${destinationName}; it may have changed during installation.`)
 }
 
-async function writeManagedFile(projectRoot, item, force) {
+async function writeManagedFile(projectRoot, item, force, written) {
   const destinationDirectory = await inspectDirectoryChain(projectRoot, item.destination.slice(0, -1), true)
   const destinationPath = join(destinationDirectory, item.destination.at(-1))
   const destinationStats = await lstatOrMissing(destinationPath)
   const destinationName = item.destination.join("/")
+  let previousContents
 
   if (destinationStats?.isSymbolicLink()) throw new Error(`Refusing symlinked destination file: ${destinationName}`)
   if (destinationStats && !destinationStats.isFile()) throw new Error(`Destination is not a regular file: ${destinationName}`)
 
   if (destinationStats) {
-    const existing = await readFile(destinationPath)
-    if (existing.equals(item.contents)) {
+    previousContents = await readFile(destinationPath)
+    if (previousContents.equals(item.contents)) {
       console.log(`Up to date: ${destinationName}`)
       return
     }
@@ -206,12 +207,62 @@ async function writeManagedFile(projectRoot, item, force) {
   const flags = destinationStats
     ? fsConstants.O_WRONLY | fsConstants.O_TRUNC | NOFOLLOW
     : fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW
+  // Record the change before writing so a partial write is rolled back too.
+  written.push({ destinationPath, destinationName, previousContents })
   await writeFileContents(destinationPath, destinationName, item.contents, flags)
 
   console.log(`${destinationStats ? "Updated" : "Installed"}: ${destinationName}`)
 }
 
-async function install(projectPath, force) {
+async function missingManagedDirectories(projectRoot, plan) {
+  const missing = []
+  const seen = new Set()
+  for (const item of plan) {
+    let current = projectRoot
+    for (const component of item.destination.slice(0, -1)) {
+      current = join(current, component)
+      if (seen.has(current)) continue
+      seen.add(current)
+      if (!(await lstatOrMissing(current))) missing.push(current)
+    }
+  }
+  return missing
+}
+
+async function rollback(written, createdDirectories) {
+  for (const change of written.reverse()) {
+    try {
+      if (change.previousContents === undefined) {
+        await unlink(change.destinationPath)
+      } else {
+        await writeFileContents(
+          change.destinationPath,
+          change.destinationName,
+          change.previousContents,
+          fsConstants.O_WRONLY | fsConstants.O_TRUNC | NOFOLLOW,
+        )
+      }
+    } catch (error) {
+      if (change.previousContents === undefined && isMissingError(error)) continue
+      console.error(`Could not roll back ${change.destinationName}; restore it manually.`)
+    }
+  }
+  // Only directories that did not exist before the install are candidates; rmdir keeps any that now hold files.
+  for (const directory of createdDirectories.reverse()) {
+    try {
+      await rmdir(directory)
+    } catch {
+      // Not empty or already gone; leave it in place.
+    }
+  }
+}
+
+function isMissingError(error) {
+  return Boolean(error && typeof error === "object" && error.code === "ENOENT")
+}
+
+// `beforeWrite` is a test seam: it runs before each managed file is written.
+export async function install(projectPath, force, { beforeWrite } = {}) {
   const projectRoot = await resolveProjectRoot(projectPath)
   const sources = await Promise.all(MANAGED_FILES.map(async (item) => ({
     ...item,
@@ -225,12 +276,20 @@ async function install(projectPath, force) {
     throw new Error(`Conflicting files already exist: ${paths}. No files were changed; review them before using --force.`)
   }
 
-  for (const item of plan) {
-    if (item.status === "same") {
-      console.log(`Up to date: ${item.destination.join("/")}`)
-      continue
+  const createdDirectories = await missingManagedDirectories(projectRoot, plan)
+  const written = []
+  try {
+    for (const item of plan) {
+      if (item.status === "same") {
+        console.log(`Up to date: ${item.destination.join("/")}`)
+        continue
+      }
+      await beforeWrite?.(item.destination.join("/"))
+      await writeManagedFile(projectRoot, item, force, written)
     }
-    await writeManagedFile(projectRoot, item, force)
+  } catch (error) {
+    await rollback(written, createdDirectories)
+    throw error
   }
 }
 
@@ -243,7 +302,10 @@ async function main() {
   await install(args.projectPath, args.force)
 }
 
-main().catch((error) => {
-  console.error(`ImageGen install failed: ${error instanceof Error ? error.message : String(error)}`)
-  process.exitCode = 1
-})
+const isEntryPoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+if (isEntryPoint) {
+  main().catch((error) => {
+    console.error(`ImageGen install failed: ${error instanceof Error ? error.message : String(error)}`)
+    process.exitCode = 1
+  })
+}

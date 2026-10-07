@@ -37,6 +37,15 @@ const MAX_REFERENCE_COUNT = 5
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 const MAX_REFERENCE_TOTAL_BYTES = 50 * 1024 * 1024
 const MAX_OUTPUT_VERSION = 999
+const OUTPUT_EXTENSION = ".png"
+const IMAGE_GENERATION_TIMEOUT_MS = 10 * 60 * 1000
+const MAX_FAILURE_DETAIL_CHARS = 300
+const SIZE_PATTERN = /^([1-9]\d*)x([1-9]\d*)$/
+const SIZE_DIMENSION_STEP = 16
+const SIZE_MAX_EDGE = 3840
+const SIZE_MAX_ASPECT_RATIO = 3
+const SIZE_MIN_PIXELS = 655360
+const SIZE_MAX_PIXELS = 8294400
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 const IMAGE_TOOL_DESCRIPTION = [
   "Generate raster images using OpenAI's hosted image_generation tool.",
@@ -93,7 +102,7 @@ async function resolveProjectRoot(projectDirectory) {
 function detectImageMime(header) {
   if (
     header.length >= 8 &&
-    header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    header.subarray(0, 8).equals(PNG_SIGNATURE)
   ) {
     return "image/png"
   }
@@ -268,12 +277,6 @@ async function withValidatedReferenceFiles(paths, projectDirectory, useFiles) {
   }
 }
 
-export async function validateReferenceImages(paths, projectDirectory) {
-  return withValidatedReferenceFiles(paths, projectDirectory, (entries) =>
-    entries.map(({ index, size, mime }) => ({ index, size, mime })),
-  )
-}
-
 export async function readReferenceImages(paths, projectDirectory) {
   return withValidatedReferenceFiles(paths, projectDirectory, async (entries) => {
     const dataUrls = []
@@ -286,6 +289,21 @@ export async function readReferenceImages(paths, projectDirectory) {
     }
     return dataUrls
   })
+}
+
+function ensureOutputExtension(normalized) {
+  const name = path.basename(normalized)
+  if (name.toLowerCase().endsWith(OUTPUT_EXTENSION)) {
+    if (name.length === OUTPUT_EXTENSION.length) {
+      throw new Error("The out argument must include a filename before .png.")
+    }
+    return normalized
+  }
+  const extension = path.extname(name)
+  if (extension !== "") {
+    throw new Error(`The out argument must end in .png because the plugin writes PNG files; got "${extension}".`)
+  }
+  return `${normalized}${OUTPUT_EXTENSION}`
 }
 
 export function validateOutputPath(out) {
@@ -306,7 +324,7 @@ export function validateOutputPath(out) {
   if (normalized === "." || normalized === path.sep || path.isAbsolute(normalized)) {
     throw new Error("The out argument must name a file inside .opencode/generated-images/.")
   }
-  return normalized
+  return ensureOutputExtension(normalized)
 }
 
 async function inspectOutputTarget(candidatePath, outputRoot) {
@@ -469,7 +487,7 @@ export async function writeGeneratedImage(out, projectDirectory, imageBytes) {
     if (await inspectOutputTarget(candidatePath, outputRoot)) continue
     let handle
     try {
-      handle = await fs.open(candidatePath, "wx", 0o600)
+      handle = await fs.open(candidatePath, "wx", 0o644)
     } catch (error) {
       if (isErrorCode(error, "EEXIST")) {
         await inspectOutputTarget(candidatePath, outputRoot)
@@ -545,6 +563,27 @@ export async function resolveOpenAIOAuth(ctx) {
   }
 }
 
+export function validateSize(size) {
+  if (size === "auto") return size
+  const match = typeof size === "string" ? SIZE_PATTERN.exec(size) : null
+  if (!match) throw new Error("The size argument must be auto or WIDTHxHEIGHT, for example 1024x1024.")
+
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (width % SIZE_DIMENSION_STEP !== 0 || height % SIZE_DIMENSION_STEP !== 0) {
+    throw new Error("The size dimensions must both be multiples of 16.")
+  }
+  const longEdge = Math.max(width, height)
+  const shortEdge = Math.min(width, height)
+  if (longEdge > SIZE_MAX_EDGE) throw new Error("The size longest edge must be at most 3840 pixels.")
+  if (longEdge > SIZE_MAX_ASPECT_RATIO * shortEdge) throw new Error("The size aspect ratio must be at most 3:1.")
+  const pixels = width * height
+  if (pixels < SIZE_MIN_PIXELS || pixels > SIZE_MAX_PIXELS) {
+    throw new Error("The size must have between 655360 and 8294400 total pixels.")
+  }
+  return size
+}
+
 function validateGenerationArgs(args) {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     throw new Error("The gpt_imagegen arguments must be an object.")
@@ -556,9 +595,7 @@ function validateGenerationArgs(args) {
   if (!["low", "medium", "high", "auto"].includes(args.quality)) {
     throw new Error("The quality argument must be low, medium, high, or auto.")
   }
-  if (args.size !== undefined && typeof args.size !== "string") {
-    throw new Error("The size argument must be a string when supplied.")
-  }
+  if (args.size !== undefined) validateSize(args.size)
   if (args.images !== undefined && !Array.isArray(args.images)) {
     throw new Error("The images argument must be an array of file paths.")
   }
@@ -624,6 +661,17 @@ function parseSSEJson(data) {
   }
 }
 
+function describeFailureEvent(event) {
+  const detail =
+    event.error?.message ??
+    event.message ??
+    event.response?.error?.message ??
+    event.response?.incomplete_details?.reason
+  if (typeof detail !== "string") return undefined
+  const text = detail.replace(/\s+/g, " ").trim()
+  return text.length > 0 ? text.slice(0, MAX_FAILURE_DETAIL_CHARS) : undefined
+}
+
 export async function parseImageGenerationResultFromSSE(stream, { signal } = {}) {
   if (!stream || typeof stream.getReader !== "function") {
     throw new Error("The Codex image response did not provide a readable event stream.")
@@ -644,7 +692,12 @@ export async function parseImageGenerationResultFromSSE(stream, { signal } = {})
     if (!event || typeof event !== "object") return
 
     if (["error", "response.failed", "response.incomplete"].includes(event.type)) {
-      throw new Error("The Codex image-generation request failed while processing the response.")
+      const detail = describeFailureEvent(event)
+      throw new Error(
+        detail
+          ? `The Codex image-generation request failed: ${detail}`
+          : "The Codex image-generation request failed while processing the response.",
+      )
     }
     if (event.type !== "response.output_item.done" || event.item?.type !== "image_generation_call") return
     if (typeof event.item.result !== "string" || event.item.result.length === 0) {
@@ -685,6 +738,7 @@ export async function parseImageGenerationResultFromSSE(stream, { signal } = {})
     pending = pending.slice(start)
   }
 
+  let completed = false
   try {
     while (true) {
       if (signal?.aborted) throw new Error("Image generation was cancelled.")
@@ -708,7 +762,10 @@ export async function parseImageGenerationResultFromSSE(stream, { signal } = {})
       consumeLines(chunk.done)
       if (chunk.done) break
     }
+    completed = true
   } finally {
+    // Release the upstream connection when parsing stops early (failure event, cancel, timeout).
+    if (!completed) await reader.cancel().catch(() => {})
     reader.releaseLock()
   }
 
@@ -750,33 +807,86 @@ export function decodeGeneratedPng(encodedImage) {
   return bytes
 }
 
-export async function requestGeneratedPng(auth, args, referenceDataUrls, { fetchImpl = globalThis.fetch, signal } = {}) {
+function describeHttpFailure(status) {
+  if (status === 401 || status === 403) {
+    return "ChatGPT rejected the OpenAI OAuth connection. Reconnect ChatGPT/Codex OAuth and retry."
+  }
+  if (status === 400 || status === 422) {
+    return `ChatGPT rejected the image request (HTTP ${status}). Check the prompt, size, quality, and reference images; reconnecting OAuth will not fix this.`
+  }
+  if (status === 404) {
+    return "The ChatGPT image endpoint was not found (HTTP 404). The undocumented endpoint may have changed; check for a plugin update."
+  }
+  if (status === 413) {
+    return "ChatGPT rejected the image request as too large (HTTP 413). Use fewer or smaller reference images."
+  }
+  if (status === 429) {
+    return "ChatGPT image generation is rate limited (HTTP 429). Wait before retrying."
+  }
+  if (Number.isInteger(status) && status >= 500) {
+    return `ChatGPT image generation is temporarily unavailable (HTTP ${status}). Retry later.`
+  }
+  const label = Number.isInteger(status) ? `HTTP ${status}` : "an HTTP error"
+  return `ChatGPT image generation returned ${label}. Retry later.`
+}
+
+async function discardBody(response) {
+  try {
+    await response?.body?.cancel()
+  } catch {
+    // The body is already closed or unreadable, so there is nothing left to release.
+  }
+}
+
+export async function requestGeneratedPng(
+  auth,
+  args,
+  referenceDataUrls,
+  { fetchImpl = globalThis.fetch, signal, timeoutMs = IMAGE_GENERATION_TIMEOUT_MS } = {},
+) {
   if (typeof fetchImpl !== "function") throw new Error("This runtime does not provide fetch for the Codex request.")
   const request = buildCodexRequest(auth, args, referenceDataUrls)
 
-  let response
+  // One controller covers both the caller's cancellation and the time limit, including the
+  // stream read, where a stalled response would otherwise hang the tool indefinitely.
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const abortFromCaller = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  else signal?.addEventListener("abort", abortFromCaller, { once: true })
+
   try {
-    response = await fetchImpl(request.url, {
-      ...request.init,
-      redirect: "error",
-      ...(signal ? { signal } : {}),
-    })
-  } catch {
-    if (signal?.aborted) throw new Error("Image generation was cancelled.")
-    throw new Error("Could not reach ChatGPT image generation. Check the network connection and retry.")
-  }
-
-  if (!response?.ok) {
-    if (response?.status === 401 || response?.status === 403) {
-      throw new Error("ChatGPT rejected the OpenAI OAuth connection. Reconnect ChatGPT/Codex OAuth and retry.")
+    let response
+    try {
+      response = await fetchImpl(request.url, {
+        ...request.init,
+        redirect: "error",
+        signal: controller.signal,
+      })
+    } catch {
+      throw new Error("Could not reach ChatGPT image generation. Check the network connection and retry.")
     }
-    const status = Number.isInteger(response?.status) ? `HTTP ${response.status}` : "an HTTP error"
-    throw new Error(`ChatGPT image generation returned ${status}. Retry later or reconnect ChatGPT OAuth.`)
-  }
-  if (!response.body) throw new Error("ChatGPT image generation returned no event stream.")
 
-  const encodedImage = await parseImageGenerationResultFromSSE(response.body, { signal })
-  return decodeGeneratedPng(encodedImage)
+    if (!response?.ok) {
+      await discardBody(response)
+      throw new Error(describeHttpFailure(response?.status))
+    }
+    if (!response.body) throw new Error("ChatGPT image generation returned no event stream.")
+
+    const encodedImage = await parseImageGenerationResultFromSSE(response.body, { signal: controller.signal })
+    return decodeGeneratedPng(encodedImage)
+  } catch (error) {
+    if (timedOut) throw new Error("ChatGPT image generation timed out before finishing. Retry later.")
+    if (signal?.aborted) throw new Error("Image generation was cancelled.")
+    throw error
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener("abort", abortFromCaller)
+  }
 }
 
 export default {
@@ -797,7 +907,8 @@ export default {
             prompt: { type: "string", description: "Description of the image to generate." },
             out: {
               type: "string",
-              description: "Relative output file path under .opencode/generated-images/. The plugin writes a PNG.",
+              description:
+                "Relative output file path under .opencode/generated-images/, ending in .png (added when no extension is given).",
             },
             quality: { type: "string", enum: ["low", "medium", "high", "auto"] },
             size: {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
+import { install } from "../../install.mjs"
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const INSTALLER = join(REPO_ROOT, "install.mjs")
@@ -153,5 +154,40 @@ describe("project installer", { concurrency: false }, () => {
     assert.match(`${result.stdout}\n${result.stderr}`, /symlink/i)
     assert.equal(await readFile(outsideFile, "utf8"), "outside user file")
     await assert.rejects(readFile(join(project, FILES[1])), { code: "ENOENT" })
+  })
+
+  it("rolls back created files and directories when a later write fails", async (t) => {
+    const { project } = await makeProject(t)
+    t.mock.method(console, "log", () => {})
+
+    await assert.rejects(
+      install(project, false, {
+        beforeWrite: (name) => {
+          if (name === FILES[1]) throw new Error("injected failure")
+        },
+      }),
+      /injected failure/,
+    )
+    await assert.rejects(readdir(join(project, ".opencode")), { code: "ENOENT" })
+  })
+
+  it("restores previous contents of overwritten files when a later write fails", async (t) => {
+    const { project } = await makeProject(t)
+    const pluginPath = join(project, FILES[0])
+    await mkdir(dirname(pluginPath), { recursive: true })
+    await writeFile(pluginPath, "old plugin")
+    t.mock.method(console, "log", () => {})
+
+    await assert.rejects(
+      install(project, true, {
+        beforeWrite: (name) => {
+          if (name === FILES[1]) throw new Error("injected failure")
+        },
+      }),
+      /injected failure/,
+    )
+    assert.equal(await readFile(pluginPath, "utf8"), "old plugin")
+    await assert.rejects(readFile(join(project, FILES[1])), { code: "ENOENT" })
+    await assert.rejects(readdir(join(project, ".opencode", "skills")), { code: "ENOENT" })
   })
 })

@@ -31,9 +31,9 @@ No `npm install` is required to run the plugin.
 Call the `gpt_imagegen` tool with:
 
 - `prompt` — describe subject, composition, style, lighting, and important constraints.
-- `out` — a relative filename under `.opencode/generated-images/`; use `hero.png`, not `.opencode/generated-images/hero.png`.
+- `out` — a relative filename under `.opencode/generated-images/`, ending in `.png`; use `hero.png`, not `.opencode/generated-images/hero.png`. If the extension is omitted, `.png` is added. Any other extension is rejected before generation starts.
 - `quality` — `low`, `medium`, `high`, or `auto`.
-- `size` — optional `WIDTHxHEIGHT`; dimensions must be multiples of 16, max edge 3840, aspect ratio at most 3:1, and total pixels between 655,360 and 8,294,400.
+- `size` — optional `auto` or `WIDTHxHEIGHT`; dimensions must be multiples of 16, max edge 3840, aspect ratio at most 3:1, and total pixels between 655,360 and 8,294,400. These limits are checked before any request is sent.
 - `images` — optional project-relative reference image paths. Only PNG, JPEG, WebP, and GIF files inside the active project are accepted; maximum 5 images, 20 MiB each, 50 MiB total.
 
 Example:
@@ -53,5 +53,6 @@ Do not overwrite an existing asset manually: the plugin preserves existing files
 
 - References and output stay within the active project; do not work around this boundary with absolute paths or symlinks.
 - Output is PNG under `.opencode/generated-images/`.
+- A generation request that runs longer than 10 minutes fails with a timeout error. Report it and suggest retrying.
 - The plugin is V2-only. Compatibility beyond the versions verified by this repository is not guaranteed.
 - Upstream MIT license and attribution to Yuji Hatakeyama are retained in the plugin source.
