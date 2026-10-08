@@ -32,7 +32,9 @@ export const CODEX_RESPONSES_ENDPOINT = "https://chatgpt.com/backend-api/codex/r
 export const MAX_CODEX_RESPONSE_BYTES = 72 * 1024 * 1024
 export const MAX_GENERATED_PNG_BYTES = 50 * 1024 * 1024
 
-const CODEX_MODEL = "gpt-5.5"
+const DEFAULT_CODEX_MODEL = "gpt-5.5"
+const IMAGEGEN_MODEL_ENV = "OPENCODE_IMAGEGEN_MODEL"
+const MAX_ERROR_EXCERPT_CHARS = 500
 const MAX_REFERENCE_COUNT = 5
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 const MAX_REFERENCE_TOTAL_BYTES = 50 * 1024 * 1024
@@ -602,6 +604,19 @@ function validateGenerationArgs(args) {
   return args
 }
 
+export function resolveCodexModel(env = process.env) {
+  const configured = env?.[IMAGEGEN_MODEL_ENV]
+  if (configured === undefined) return DEFAULT_CODEX_MODEL
+  if (typeof configured !== "string" || configured.trim().length === 0) {
+    throw new Error(`${IMAGEGEN_MODEL_ENV} must be a non-empty model slug when set.`)
+  }
+  const model = configured.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(model)) {
+    throw new Error(`${IMAGEGEN_MODEL_ENV} contains an invalid model slug.`)
+  }
+  return model
+}
+
 export function buildCodexRequest(auth, args, referenceDataUrls = []) {
   if (!auth || auth.type !== "oauth" || typeof auth.access !== "string" || auth.access.length === 0) {
     throw new Error("A ChatGPT/Codex OAuth access token is required to build the request.")
@@ -617,7 +632,7 @@ export function buildCodexRequest(auth, args, referenceDataUrls = []) {
   }
 
   const body = {
-    model: CODEX_MODEL,
+    model: resolveCodexModel(),
     instructions:
       "You are an image generation assistant running inside the Codex backend. " +
       "Always satisfy the request by invoking the image_generation tool exactly once. " +
@@ -830,6 +845,25 @@ function describeHttpFailure(status) {
   return `ChatGPT image generation returned ${label}. Retry later.`
 }
 
+async function readErrorExcerpt(response) {
+  const reader = response?.body?.getReader?.()
+  if (!reader) return ""
+  const decoder = new TextDecoder()
+  let text = ""
+  try {
+    while (text.length < MAX_ERROR_EXCERPT_CHARS) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      text += decoder.decode(chunk.value, { stream: true })
+    }
+  } catch {
+    // Keep whatever text arrived before the read failed.
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+  return text.replace(/\s+/g, " ").trim().slice(0, MAX_ERROR_EXCERPT_CHARS)
+}
+
 async function discardBody(response) {
   try {
     await response?.body?.cancel()
@@ -872,8 +906,13 @@ export async function requestGeneratedPng(
     }
 
     if (!response?.ok) {
-      await discardBody(response)
-      throw new Error(describeHttpFailure(response?.status))
+      if (response?.status === 401 || response?.status === 403) {
+        await discardBody(response)
+        throw new Error(describeHttpFailure(response.status))
+      }
+      const excerpt = await readErrorExcerpt(response)
+      const suffix = excerpt ? ` Backend response: ${excerpt}` : ""
+      throw new Error(`${describeHttpFailure(response?.status)}${suffix}`)
     }
     if (!response.body) throw new Error("ChatGPT image generation returned no event stream.")
 

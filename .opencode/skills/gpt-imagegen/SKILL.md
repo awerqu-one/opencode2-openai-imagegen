@@ -13,6 +13,7 @@ Use `gpt_imagegen` when the user asks to create a raster image. The tool returns
 - Connect this machine's OpenAI integration with ChatGPT/Codex OAuth. API-key credentials are not supported; never copy credentials into the repository or prompt.
 - Allow network access to `chatgpt.com` for image generation.
 - The plugin calls the undocumented `chatgpt.com/backend-api/codex/responses` endpoint. It may change independently of this project.
+- The model defaults to `gpt-5.5`. If that deployment is retired, set `OPENCODE_IMAGEGEN_MODEL` for the OpenCode process to a replacement model slug.
 
 ## Install in another project
 

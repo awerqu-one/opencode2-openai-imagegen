@@ -41,6 +41,16 @@ Reference images must be inside the active project and use PNG, JPEG, WebP, or G
 
 For complete agent instructions and argument details, see [the GPT ImageGen skill](.opencode/skills/gpt-imagegen/SKILL.md).
 
+## Model override
+
+The default model is `gpt-5.5`. If that deployment is retired, set `OPENCODE_IMAGEGEN_MODEL` for the OpenCode process to a replacement model slug:
+
+```bash
+OPENCODE_IMAGEGEN_MODEL=gpt-5.6-sol opencode
+```
+
+The value is trimmed and must match `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. The override exists because the ChatGPT Codex backend is undocumented and model availability can change independently of this project.
+
 ## Test
 
 Node.js 18 or newer is required for the installer and built-in test runner:
@@ -58,6 +68,7 @@ The plugin has no third-party runtime dependencies.
 - Image requests use `chatgpt.com/backend-api/codex/responses`, an undocumented endpoint that may change independently of this project.
 - OpenAI API-key authentication is not supported; connect ChatGPT/Codex OAuth through OpenCode.
 - Each generation request times out after 10 minutes. A stalled response fails with a timeout error instead of hanging.
+- Non-auth HTTP failures include a bounded backend error excerpt (up to 500 characters) to make model or backend changes easier to diagnose.
 
 See the [OpenCode plugin guide](https://opencode.ai/v2/docs/build/plugins) and [skills guide](https://opencode.ai/v2/docs/skills).
 

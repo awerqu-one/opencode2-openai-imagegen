@@ -3,8 +3,10 @@ import { describe, it } from "node:test"
 import {
   MAX_CODEX_RESPONSE_BYTES,
   MAX_GENERATED_PNG_BYTES,
+  buildCodexRequest,
   parseImageGenerationResultFromSSE,
   requestGeneratedPng,
+  resolveCodexModel,
   validateGeneratedPngEncodedLength,
   validateOutputPath,
   validateSize,
@@ -701,5 +703,48 @@ describe("OpenCode V2 GPT ImageGen plugin", { concurrency: false }, () => {
     const outcome = await pending
     assert.match(outcome.message, /cancelled/)
     assert.doesNotMatch(outcome.message, /timed out/)
+  })
+
+  it("validates configured model slugs and defaults to gpt-5.5", () => {
+    assert.equal(resolveCodexModel({}), "gpt-5.5")
+    assert.equal(resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "gpt-5.6-sol" }), "gpt-5.6-sol")
+    assert.equal(resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "  gpt-5.6-sol  " }), "gpt-5.6-sol")
+    assert.throws(() => resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "bad model slug" }), /model slug/i)
+    assert.throws(() => resolveCodexModel({ OPENCODE_IMAGEGEN_MODEL: "   " }), /non-empty model slug/i)
+  })
+
+  it("sends the configured model in the Codex request body", () => {
+    const previous = process.env.OPENCODE_IMAGEGEN_MODEL
+    process.env.OPENCODE_IMAGEGEN_MODEL = "gpt-5.6-sol"
+    try {
+      const request = buildCodexRequest({ type: "oauth", access: "unit-test-oauth-token-not-real" }, baseArgs(), [])
+      assert.equal(JSON.parse(request.init.body).model, "gpt-5.6-sol")
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODE_IMAGEGEN_MODEL
+      else process.env.OPENCODE_IMAGEGEN_MODEL = previous
+    }
+  })
+
+  it("includes a bounded backend excerpt for non-auth HTTP failures", async () => {
+    const auth = { type: "oauth", access: "unit-test-oauth-token-not-real" }
+    const modelError = await requestGeneratedPng(auth, baseArgs(), [], {
+      fetchImpl: async () => new Response(JSON.stringify({ error: "model not found" }), { status: 404 }),
+    }).then(() => undefined, (error) => error)
+    assert.match(modelError.message, /HTTP 404.*model not found/i)
+
+    const longError = await requestGeneratedPng(auth, baseArgs(), [], {
+      fetchImpl: async () => new Response("x".repeat(5000), { status: 400 }),
+    }).then(() => undefined, (error) => error)
+    assert.match(longError.message, /rejected the image request/)
+    assert.ok(longError.message.length < 800, `the excerpt should be bounded; got ${longError.message.length} characters`)
+  })
+
+  it("keeps backend bodies out of authentication failure messages", async () => {
+    const auth = { type: "oauth", access: "unit-test-oauth-token-not-real" }
+    const outcome = await requestGeneratedPng(auth, baseArgs(), [], {
+      fetchImpl: async () => new Response("unit-test-backend-body-marker", { status: 401 }),
+    }).then(() => undefined, (error) => error)
+    assert.match(outcome.message, /Reconnect ChatGPT\/Codex OAuth/)
+    assert.doesNotMatch(outcome.message, /unit-test-backend-body-marker/)
   })
 })
